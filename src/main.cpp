@@ -42,13 +42,14 @@ static int32_t read_full(int fd, char *buf, size_t n) {
 static int32_t do_something(int client_fd){
     char rbuf[4 + k_max_msg];
     errno = 0;
+
     int32_t err = read_full(client_fd, rbuf, 4);
 
     if (err != 0) {
         msg("Error reading message size");
         return -1;
     }
-
+    
     uint32_t message_size = 0;
     memcpy(&message_size, rbuf, 4);
     message_size = ntohl(message_size);
@@ -60,16 +61,22 @@ static int32_t do_something(int client_fd){
         return -1;
     }
 
-    err = read_full(client_fd, &rbuf[8], 4);
+    err = read_full(client_fd, &rbuf[4], 8);
     if (err) {
         msg("read() error");
         return err;
     }
 
+
     uint32_t correlation_id;
-    memcpy(&correlation_id, rbuf+8, 4);
+    memcpy(&correlation_id, &rbuf[4+4], 4);
     correlation_id = ntohl(correlation_id);
     std::cout << "correlation_id: " << correlation_id << std::endl;
+
+    // for (int i = 8; i < 12; ++i) {
+    //     printf("%02x ", static_cast<unsigned char>(rbuf[i]));
+    // }
+    // printf("\n");
 
     write(client_fd, &message_size, sizeof(message_size));
     write(client_fd, &correlation_id, sizeof(correlation_id));
