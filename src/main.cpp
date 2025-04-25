@@ -13,11 +13,24 @@
 
 const size_t k_max_msg = 4096;
 
+struct Request_header{
+    int16_t request_api_key;
+    int16_t request_api_version;
+    int32_t correlation_id;
+};
+
+
+struct Request_message{
+    int32_t message_size;
+    Request_header header;
+ };
+
+
 static void msg(const char *msg) {
    std::cerr << msg << std::endl;
-
-
 }
+
+
 static int32_t read_full(int fd, char *buf, size_t n) {
    while (n > 0) {
        ssize_t rv = read(fd, buf, n);
@@ -32,11 +45,10 @@ static int32_t read_full(int fd, char *buf, size_t n) {
 }
 
 
-static int32_t do_something(int client_fd) {
-    char rbuf[4 + k_max_msg];
+static int32_t parse_request_message(int client_fd, Request_message &request ) {
+    char rbuf[4 + k_max_msg]; //header
     errno = 0;
 
-    // Read 4-byte message size
     if (read_full(client_fd, rbuf, 4) != 0) {
         msg("Error reading message size");
         return -1;
@@ -44,12 +56,15 @@ static int32_t do_something(int client_fd) {
 
     uint32_t message_size_net = 0;
     memcpy(&message_size_net, rbuf, 4);
+    request.message_size = message_size_net;
+
     uint32_t message_size = ntohl(message_size_net);
-    
+
     if (message_size > k_max_msg) {
         msg("too long");
         return -1;
     }
+    
 
     // Read full request body
     if (read_full(client_fd, &rbuf[4], message_size) != 0) {
@@ -57,25 +72,22 @@ static int32_t do_something(int client_fd) {
         return -1;
     }
 
-    // Extract correlation ID at offset 8 (4 for header + 4 for API/Version)
-    uint32_t correlation_id_net = 0;
-    memcpy(&correlation_id_net, &rbuf[4 + 4], 4);
-    uint32_t correlation_id = ntohl(correlation_id_net);
+    // Parse request_api_key
+    uint16_t api_key_net = 0;
+    memcpy(&api_key_net, rbuf + 4, 2);
+    request.header.request_api_key = (api_key_net);
 
-    // Print debug
-    std::cout << "Message size: " << message_size << "\n";
-    std::cout << "correlation_id: " << correlation_id << "\n";
+    // Parse request_api_version
+    uint16_t version_net = 0;
+    memcpy(&version_net, rbuf + 6, 2);
+    request.header.request_api_version = (version_net);
+
+    // Parse correlation_id
+    uint32_t corr_id_net = 0;
+    memcpy(&corr_id_net, rbuf + 8, 4);
+    request.header.correlation_id = (corr_id_net);
     
-
-    // Send minimal valid Kafka response (length + correlation_id)
-    uint32_t response_len = htonl(4);  // 4-byte correlation_id
-    correlation_id_net = htonl(correlation_id);
-    char wbuf[8];
-    memcpy(wbuf, &response_len, 4);
-    memcpy(wbuf + 4, &correlation_id_net, 4);
-
-    write(client_fd, wbuf, 8);
-    return 0;
+    return true;
 }
 
 
@@ -130,13 +142,28 @@ int main(int argc, char* argv[]) {
     int client_fd = accept(server_fd, reinterpret_cast<struct sockaddr*>(&client_addr), &client_addr_len);
     std::cout << "Client connected\n";
 
-    do_something(client_fd);
 
-    // int32_t message_size = htonl(0);  // No payload
-    // int32_t correlation_id = htonl(7);
+    Request_message req;
 
-    // write(client_fd, &message_size, sizeof(message_size));
-    // write(client_fd, &correlation_id, sizeof(correlation_id));
+    if (parse_request_message(client_fd, req)) {
+        std::cout << "message_size: " << req.message_size << "\n";
+        std::cout << "api_key: " << req.header.request_api_key << "\n";
+        std::cout << "api_version: " << req.header.request_api_version << "\n";
+        std::cout << "correlation_id: " << req.header.correlation_id << "\n";
+        
+        if (req.header.request_api_version < 0 || req.header.request_api_version > 4) {
+            int32_t error_code = htons(35);
+
+            char wbuf[10];
+
+            memcpy(wbuf, &req.message_size, 4);
+            memcpy(wbuf + 4, &req.header.correlation_id, 4);
+            memcpy(wbuf + 8, &error_code, 2);
+
+            write(client_fd, wbuf, sizeof(wbuf));
+            
+        }
+    }
 
     close(client_fd);
 
