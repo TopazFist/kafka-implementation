@@ -8,165 +8,158 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <stdint.h>
-#include <assert.h>
+#include <cassert>
 #include <iomanip>
 
-const size_t k_max_msg = 4096;
+constexpr size_t k_max_msg = 4096;
+constexpr int response_msg_size = 23;
 
-struct Request_header{
+struct Request_header {
     int16_t request_api_key;
     int16_t request_api_version;
     int32_t correlation_id;
 };
 
+struct Response_body {
+    int16_t be_error_code;
+    uint8_t api_keys_length = 0x02; 
+    int16_t be_api_key = htons(18);
+    int16_t be_min_version = htons(0);
+    int16_t be_max_version = htons(4);
+    int32_t be_throttle_time_ms = htonl(0);
+    uint8_t no_tags = 0x00;
+    uint8_t api_key_tags = 0x00;
+};
 
-struct Request_message{
+struct Request_message {
     int32_t message_size;
     Request_header header;
- };
+};
 
+struct Response_message {
+    int32_t message_size = htonl(response_msg_size-4);
+    int32_t correlation_id;
+    Response_body header;
+};
 
-static void msg(const char *msg) {
-   std::cerr << msg << std::endl;
+void log(const char* msg) {
+    std::cerr << msg << std::endl;
 }
 
-
-static int32_t read_full(int fd, char *buf, size_t n) {
-   while (n > 0) {
-       ssize_t rv = read(fd, buf, n);
-       if (rv <= 0) {
-           return -1;  // error, or unexpected EOF
-       }
-       assert((size_t)rv <= n);
-       n -= (size_t)rv;
-       buf += rv;
-   }
-   return 0;
+int32_t read_full(int fd, char* buf, size_t n) {
+    while (n > 0) {
+        ssize_t rv = read(fd, buf, n);
+        if (rv <= 0) return -1;
+        assert(static_cast<size_t>(rv) <= n);
+        n -= static_cast<size_t>(rv);
+        buf += rv;
+    }
+    return 0;
 }
 
-
-static int32_t parse_request_message(int client_fd, Request_message &request ) {
-    char rbuf[4 + k_max_msg]; //header
-    errno = 0;
-
+bool parse_request_message(int client_fd, Request_message& request) {
+    char rbuf[4 + k_max_msg];
     if (read_full(client_fd, rbuf, 4) != 0) {
-        msg("Error reading message size");
-        return -1;
+        log("Error reading message size");
+        return false;
     }
 
     uint32_t message_size_net = 0;
     memcpy(&message_size_net, rbuf, 4);
-    request.message_size = message_size_net;
+    request.message_size = ntohl(message_size_net);
 
-    uint32_t message_size = ntohl(message_size_net);
-
-    if (message_size > k_max_msg) {
-        msg("too long");
-        return -1;
-    }
-    
-
-    // Read full request body
-    if (read_full(client_fd, &rbuf[4], message_size) != 0) {
-        msg("read() error");
-        return -1;
+    if (request.message_size > k_max_msg) {
+        log("Message too long");
+        return false;
     }
 
-    // Parse request_api_key
-    uint16_t api_key_net = 0;
-    memcpy(&api_key_net, rbuf + 4, 2);
-    request.header.request_api_key = (api_key_net);
+    if (read_full(client_fd, &rbuf[4], request.message_size) != 0) {
+        log("Error reading full request");
+        return false;
+    }
 
-    // Parse request_api_version
-    uint16_t version_net = 0;
-    memcpy(&version_net, rbuf + 6, 2);
-    request.header.request_api_version = (version_net);
+    memcpy(&request.header.request_api_key, rbuf + 4, 2);
+    memcpy(&request.header.request_api_version, rbuf + 6, 2);
+    memcpy(&request.header.correlation_id, rbuf + 8, 4);
 
-    // Parse correlation_id
-    uint32_t corr_id_net = 0;
-    memcpy(&corr_id_net, rbuf + 8, 4);
-    request.header.correlation_id = (corr_id_net);
-    
+    request.header.request_api_key = ntohs(request.header.request_api_key);
+    request.header.request_api_version = ntohs(request.header.request_api_version);
+    request.header.correlation_id = ntohl(request.header.correlation_id);
+
     return true;
 }
 
+void send_response(int client_fd, const Request_message& req) {
+    Response_message res;
+    res.correlation_id = htonl(req.header.correlation_id);
+    res.header.be_error_code = htons(
+        (req.header.request_api_version >= 0 && req.header.request_api_version <= 4) ? 0 : 35
+    );
 
-int main(int argc, char* argv[]) {
-    // Disable output buffering
+    char wbuf[response_msg_size];
+    memcpy(wbuf, &res.message_size, 4);
+    memcpy(wbuf + 4, &res.correlation_id, 4);
+    memcpy(wbuf + 8, &res.header.be_error_code, 2);
+    memcpy(wbuf + 10, &res.header.api_keys_length, 1);
+    memcpy(wbuf + 11, &res.header.be_api_key, 2);
+    memcpy(wbuf + 13, &res.header.be_min_version, 2);
+    memcpy(wbuf + 15, &res.header.be_max_version, 2);
+    memcpy(wbuf + 17, &res.header.be_throttle_time_ms, 4);
+    memcpy(wbuf + 21, &res.header.no_tags, 1);
+    memcpy(wbuf + 22, &res.header.api_key_tags, 1);
+
+    write(client_fd, wbuf, sizeof(wbuf));
+
+    std::cout << "Sent Response (Hex): ";
+    for (int i = 0; i < sizeof(wbuf); ++i) {
+        std::cout << std::hex << std::setw(2) << std::setfill('0')
+                  << static_cast<uint32_t>(static_cast<uint8_t>(wbuf[i])) << " ";
+    }
+    std::cout << std::dec << std::endl;
+}
+
+int main() {
     std::cout << std::unitbuf;
     std::cerr << std::unitbuf;
 
     int server_fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (server_fd < 0) {
-        std::cerr << "Failed to create server socket: " << std::endl;
-        return 1;
-    }
+    if (server_fd < 0) return perror("socket"), 1;
 
-    // Since the tester restarts your program quite often, setting SO_REUSEADDR
-    // ensures that we don't run into 'Address already in use' errors
     int reuse = 1;
-    if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) < 0) {
-        close(server_fd);
-        std::cerr << "setsockopt failed: " << std::endl;
-        return 1;
-    }
+    if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) < 0)
+        return perror("setsockopt"), close(server_fd), 1;
 
-    struct sockaddr_in server_addr{};
+    sockaddr_in server_addr{};
     server_addr.sin_family = AF_INET;
     server_addr.sin_addr.s_addr = INADDR_ANY;
     server_addr.sin_port = htons(9092);
 
-    if (bind(server_fd, reinterpret_cast<struct sockaddr*>(&server_addr), sizeof(server_addr)) != 0) {
-        close(server_fd);
-        std::cerr << "Failed to bind to port 9092" << std::endl;
-        return 1;
-    }
+    if (bind(server_fd, reinterpret_cast<sockaddr*>(&server_addr), sizeof(server_addr)) != 0)
+        return perror("bind"), close(server_fd), 1;
 
-    int connection_backlog = 5;
-    if (listen(server_fd, connection_backlog) != 0) {
-        close(server_fd);
-        std::cerr << "listen failed" << std::endl;
-        return 1;
-    }
+    if (listen(server_fd, 5) != 0)
+        return perror("listen"), close(server_fd), 1;
 
     std::cout << "Waiting for a client to connect...\n";
+    sockaddr_in client_addr{};
+    socklen_t client_len = sizeof(client_addr);
 
-    struct sockaddr_in client_addr{};
-    socklen_t client_addr_len = sizeof(client_addr);
+    int client_fd = accept(server_fd, reinterpret_cast<sockaddr*>(&client_addr), &client_len);
+    if (client_fd < 0)
+        return perror("accept"), close(server_fd), 1;
 
-    // You can use print statements as follows for debugging, they'll be visible when running tests.
-    std::cerr << "Logs from your program will appear here!\n";
-    
-    // Uncomment this block to pass the first stage
-    // 
-    int client_fd = accept(server_fd, reinterpret_cast<struct sockaddr*>(&client_addr), &client_addr_len);
     std::cout << "Client connected\n";
 
-
     Request_message req;
-
     if (parse_request_message(client_fd, req)) {
         std::cout << "message_size: " << req.message_size << "\n";
         std::cout << "api_key: " << req.header.request_api_key << "\n";
         std::cout << "api_version: " << req.header.request_api_version << "\n";
         std::cout << "correlation_id: " << req.header.correlation_id << "\n";
-        
-        if (req.header.request_api_version < 0 || req.header.request_api_version > 4) {
-            int32_t error_code = htons(35);
-
-            char wbuf[10];
-
-            memcpy(wbuf, &req.message_size, 4);
-            memcpy(wbuf + 4, &req.header.correlation_id, 4);
-            memcpy(wbuf + 8, &error_code, 2);
-
-            write(client_fd, wbuf, sizeof(wbuf));
-            
-        }
+        send_response(client_fd, req);
     }
 
     close(client_fd);
-
     close(server_fd);
     return 0;
 }
