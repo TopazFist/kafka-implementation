@@ -9,6 +9,7 @@
 #include <sys/types.h>
 #include <stdint.h>
 #include <assert.h>
+#include <iomanip>
 
 const size_t k_max_msg = 4096;
 
@@ -73,10 +74,13 @@ static int32_t do_something(int client_fd){
     correlation_id = ntohl(correlation_id);
     std::cout << "correlation_id: " << correlation_id << std::endl;
 
+    std::cout << "Raw buffer: ";
     for (int i = 0; i < 13; ++i) {
-        printf("%02x ", static_cast<unsigned char>(rbuf[i]));
+        std::cout << std::hex << std::setw(2) << std::setfill('0')
+                << (int)(unsigned char)rbuf[i] << " ";
     }
-    printf("\n");
+    std::cout << std::dec << std::endl;  // Reset to decimal output
+
 
     write(client_fd, &message_size, sizeof(message_size));
     write(client_fd, &correlation_id, sizeof(correlation_id));
