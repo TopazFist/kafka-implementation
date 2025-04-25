@@ -7,6 +7,7 @@
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <stdint.h>
 
 int main(int argc, char* argv[]) {
     // Disable output buffering
@@ -58,6 +59,16 @@ int main(int argc, char* argv[]) {
     // 
     int client_fd = accept(server_fd, reinterpret_cast<struct sockaddr*>(&client_addr), &client_addr_len);
     std::cout << "Client connected\n";
+
+    int32_t message_size = htonl(0);  // No payload
+    int32_t correlation_id = htonl(7);
+
+    write(client_fd, &message_size, sizeof(message_size));
+    write(client_fd, &correlation_id, sizeof(correlation_id));
+
+    
+    
+
     close(client_fd);
 
     close(server_fd);
