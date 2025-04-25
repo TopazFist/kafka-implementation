@@ -73,11 +73,6 @@ static int32_t do_something(int client_fd){
     correlation_id = ntohl(correlation_id);
     std::cout << "correlation_id: " << correlation_id << std::endl;
 
-    // for (int i = 8; i < 12; ++i) {
-    //     printf("%02x ", static_cast<unsigned char>(rbuf[i]));
-    // }
-    // printf("\n");
-
     write(client_fd, &message_size, sizeof(message_size));
     write(client_fd, &correlation_id, sizeof(correlation_id));
     return 0;
