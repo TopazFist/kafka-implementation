@@ -13,79 +13,71 @@
 
 const size_t k_max_msg = 4096;
 
-struct Request_message{
-    int32_t message_size;
-    int32_t correlation_id;
-    // Request_header header;
-};
-
 static void msg(const char *msg) {
-    std::cerr << msg << std::endl;
+   std::cerr << msg << std::endl;
+
 
 }
-// struct Request_header{
-
-// };
-
 static int32_t read_full(int fd, char *buf, size_t n) {
-    while (n > 0) {
-        ssize_t rv = read(fd, buf, n);
-        if (rv <= 0) {
-            return -1;  // error, or unexpected EOF
-        }
-        assert((size_t)rv <= n);
-        n -= (size_t)rv;
-        buf += rv;
-    }
-    return 0;
+   while (n > 0) {
+       ssize_t rv = read(fd, buf, n);
+       if (rv <= 0) {
+           return -1;  // error, or unexpected EOF
+       }
+       assert((size_t)rv <= n);
+       n -= (size_t)rv;
+       buf += rv;
+   }
+   return 0;
 }
 
-static int32_t do_something(int client_fd){
+
+static int32_t do_something(int client_fd) {
     char rbuf[4 + k_max_msg];
     errno = 0;
 
-    int32_t err = read_full(client_fd, rbuf, 4);
-
-    if (err != 0) {
+    // Read 4-byte message size
+    if (read_full(client_fd, rbuf, 4) != 0) {
         msg("Error reading message size");
         return -1;
     }
+
+    uint32_t message_size_net = 0;
+    memcpy(&message_size_net, rbuf, 4);
+    uint32_t message_size = ntohl(message_size_net);
     
-    uint32_t message_size = 0;
-    memcpy(&message_size, rbuf, 4);
-    message_size = ntohl(message_size);
-    std::cout << "Message size: " << message_size << std::endl;
-
-
     if (message_size > k_max_msg) {
         msg("too long");
         return -1;
     }
 
-    err = read_full(client_fd, &rbuf[4], 8);
-    if (err) {
+    // Read full request body
+    if (read_full(client_fd, &rbuf[4], message_size) != 0) {
         msg("read() error");
-        return err;
+        return -1;
     }
 
+    // Extract correlation ID at offset 8 (4 for header + 4 for API/Version)
+    uint32_t correlation_id_net = 0;
+    memcpy(&correlation_id_net, &rbuf[4 + 4], 4);
+    uint32_t correlation_id = ntohl(correlation_id_net);
 
-    uint32_t correlation_id;
-    memcpy(&correlation_id, &rbuf[4+4], 4);
-    correlation_id = ntohl(correlation_id);
-    std::cout << "correlation_id: " << correlation_id << std::endl;
+    // Print debug
+    std::cout << "Message size: " << message_size << "\n";
+    std::cout << "correlation_id: " << correlation_id << "\n";
+    
 
-    std::cout << "Raw buffer: ";
-    for (int i = 0; i < 13; ++i) {
-        std::cout << std::hex << std::setw(2) << std::setfill('0')
-                << (int)(unsigned char)rbuf[i] << " ";
-    }
-    std::cout << std::dec << std::endl;  // Reset to decimal output
+    // Send minimal valid Kafka response (length + correlation_id)
+    uint32_t response_len = htonl(4);  // 4-byte correlation_id
+    correlation_id_net = htonl(correlation_id);
+    char wbuf[8];
+    memcpy(wbuf, &response_len, 4);
+    memcpy(wbuf + 4, &correlation_id_net, 4);
 
-
-    write(client_fd, &message_size, sizeof(message_size));
-    write(client_fd, &correlation_id, sizeof(correlation_id));
+    write(client_fd, wbuf, 8);
     return 0;
 }
+
 
 int main(int argc, char* argv[]) {
     // Disable output buffering
@@ -139,7 +131,6 @@ int main(int argc, char* argv[]) {
     std::cout << "Client connected\n";
 
     do_something(client_fd);
-    
 
     // int32_t message_size = htonl(0);  // No payload
     // int32_t correlation_id = htonl(7);
